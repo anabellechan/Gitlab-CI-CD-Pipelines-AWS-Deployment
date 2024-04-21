@@ -1,0 +1,125 @@
+stages:
+    - build
+    - package
+    - test
+    - debug
+    - deploy production
+
+variables:
+    APP_BASE_URL: http://anabellechan-16042024.s3-website-us-east-1.amazonaws.com/
+    APP_BASE_URL_STAGING: http://gitlabs3-staging.s3-website-us-east-1.amazonaws.com/
+    APP_VERSION: $CI_PIPELINE_IID
+    FILE_NAME: index.html
+
+build website: #job build
+    image: node:16-alpine
+    stage: build
+    script:
+        - yarn install
+        - yarn lint
+        - yarn test
+        - yarn build
+        - echo $APP_VERSION > build/version.html
+    artifacts:
+      paths:
+        - build
+
+build docker image:
+    stage: package
+    image: docker:26.0.2
+    services:
+        - docker:26.0.2-dind
+    script:
+        - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER $CI_REGISTRY --password-stdin
+        - docker build -t $CI_REGISTRY_IMAGE -t $CI_REGISTRY_IMAGE:$APP_VERSION . #client, sends instructions to the server- docker daemon to build the job.
+        - docker image ls #show us all image and tags available
+        - docker push --all-tags $CI_REGISTRY_IMAGE
+
+test docker image:
+    stage: test
+    image: curlimages/curl
+    services:
+        - name: $CI_REGISTRY_IMAGE:$APP_VERSION
+          alias: website
+    script: 
+        - curl http://website/version.html | grep $APP_VERSION
+
+# debug:
+#   stage: debug
+#   script:
+#     - printenv
+
+
+deploy to production:
+    stage: deploy production
+    environment: production
+    variables:
+        APP_NAME: New-webapp
+        APP_ENV_NAME: New-webapp-env
+    image: 
+      name: amazon/aws-cli:2.15.38
+      entrypoint: [""]
+    # rules:
+    #   - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH #only then run this
+    script:
+      - aws --version
+      - yum install -y gettext
+      - echo $AWS_S3_BUCKET
+      - export DEPLOY_TOKEN=$(echo $GITLAB_DEPLOY_TOKEN | tr -d "\n" | base64)
+      - envsubst < templates/Dockerrun.aws.json > Dockerrun.aws.json
+      - envsubst < templates/auth.json > auth.json
+      - cat Dockerrun.aws.json
+      - cat auth.json
+      - aws s3 cp Dockerrun.aws.json s3://$AWS_S3_BUCKET/Dockerrun.aws.json
+      - aws s3 cp auth.json s3://$AWS_S3_BUCKET/auth.json
+      - aws elasticbeanstalk create-application-version --application-name "$APP_NAME" --version-label $APP_VERSION --source-bundle S3Bucket=$AWS_S3_BUCKET,S3Key=Dockerrun.aws.json
+      - aws elasticbeanstalk update-environment --application-name "$APP_NAME" --version-label $APP_VERSION --environment-name $APP_ENV_NAME
+      # - aws elasticbeanstalk wait environment-updated --application-name "$APP_NAME" --version-label $APP_VERSION --environment-name $APP_ENV_NAME
+      # - curl $CI_ENVIRONMENT_URL/version.html | grep $APP_VERSION
+
+      # - echo "Hello S3 Bucket!" > test.txt
+      # - aws s3 sync build s3://$AWS_S3_BUCKET --delete
+      # - curl $CI_ENVIRONMENT_URL | grep "React App"
+
+#linter removed because it can be combined in build website
+
+# deploy to staging:
+#     stage: deploy staging
+#     environment: staging
+#     image: 
+#       name: amazon/aws-cli:2.15.38
+#       entrypoint: [""]
+#     rules:
+#       - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH #only then run this
+#     script:
+#       - aws --version
+#       - echo "Hello S3 Bucket!" > test.txt
+#       - aws s3 sync build s3://$AWS_S3_BUCKET_STAGING --delete
+#       - curl $APP_BASE_URL_STAGING | grep "React App"
+
+# test website: #job test
+#     image: node:16-alpine
+#     stage: test
+#     script:
+#       - yarn global add serve
+#       - apk add curl
+#       # - test -f build/index.html
+#       - serve -s build &
+#       - sleep 10
+#       - curl http://localhost:3000 | grep "React App" #grep to search the specific String
+
+
+# production tests:
+#     stage: test production
+#     image: curlimages/curl
+#     rules:
+#       - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH #only then run this
+#     script:
+#         - curl $APP_BASE_URL | grep "React App"
+
+# run_unit_tests: #job unit test
+#   image: node:16-alpine
+#   stage: .pre #the two jobs will run in parallel
+#   script:
+#     - yarn install
+#     - yarn test
